@@ -1,0 +1,301 @@
+<#
+.SYNOPSIS
+Office 365 Report
+
+.DESCRIPTION
+This Script Export to CSV File, report about users and mailboxes From Office 365
+The report include: Admin Role, Block Status, Last Password Change, if Password Never Expires, 
+MFA Status, License Type, Last Logon Time, Mailbox Size, Mailbox Max Size and smtp addresess
+
+
+.PARAMETER LicensedOnly
+
+Report only for Licensed Users
+
+.PARAMETER MailboxOnly
+
+Report only for Users with mailbox (no shared or Resources)
+
+.PARAMETER Shared
+Report Only Shared,Resources and Equipment Mailboxes
+
+.NOTES
+  Version:        1.0
+  Author:         Matanya Tzedek
+  Creation Date:  27.4.20
+  
+.EXAMPLE
+PS C:\> Office365Report -LicensedOnly
+
+
+Run the command and get report for all Licensed users
+
+#>
+
+if (-not(Get-Module -ListAvailable -Name msonline)) {Write-Warning "Please Install MsOnline Module"; sleep 5 ;exit}
+
+
+param(
+    [switch]$LicensedOnly,
+    [switch]$MailboxOnly,
+    [switch]$Shared
+    )
+
+$result = @()
+
+#Connect To Office 365
+$UserCredential = Get-Credential 
+$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $UserCredential -Authentication Basic -AllowRedirection
+Import-PSSession $Session 
+Connect-MsolService -Credential $UserCredential
+cls
+
+
+#Delete the old Report
+if (Test-Path 365Report.csv){
+    Write-Warning "deleting old 365Report.csv"
+    Remove-Item 365Report.csv
+}
+
+
+#Find All Admin Roles Users
+$admins=@()
+
+$roles = Get-MsolRole 
+
+$counter = 0
+
+foreach ($role in $roles) {
+    
+    Write-Progress -Activity "Processing Roles" -CurrentOperation $($role.name) -PercentComplete (($counter / $roles.count) * 100) -Status Processing
+    $Counter++
+
+    $roleUsers = Get-MsolRoleMember -RoleObjectId $role.ObjectId
+
+    foreach ($roleUser in $roleUsers) {
+        $roleOutput = New-Object -TypeName PSObject
+        $roleOutput | Add-Member -MemberType NoteProperty -Name RoleMemberType -Value $roleUser.RoleMemberType
+        $roleOutput | Add-Member -MemberType NoteProperty -Name EmailAddress -Value $roleUser.EmailAddress
+        $roleOutput | Add-Member -MemberType NoteProperty -Name DisplayName -Value $roleUser.DisplayName
+        $roleOutput | Add-Member -MemberType NoteProperty -Name isLicensed -Value $roleUser.isLicensed
+        $roleOutput | Add-Member -MemberType NoteProperty -Name RoleName -Value $role.Name
+
+        $admins += $roleOutput
+    }
+} 
+
+cls
+
+$users = Get-MsolUser 
+
+$Counter = 0
+
+ForEach ($user in $users){
+    
+    Write-Progress -Activity "Processing Users" -CurrentOperation $($user.displayname) -PercentComplete (($counter / $users.count) * 100) -Status Processing
+    $Counter++
+
+    #if ($user.UserType -like "Guest" -or -not $user.IsLicensed ) {continue}
+
+    if ($LicenseOnly){
+        if (-not $user.IsLicensed){continue}
+    }
+    if ($MailboxOnly){
+        if (!(Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue)) {continue}
+    }
+    if ($shared){
+        if (!(Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue)) {continue}
+        $mailbox = Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue
+        if ($mailbox.RecipientTypeDetails -eq 'UserMailbox') {continue}
+    }
+    
+    if (-not $shared){
+        $mailbox = Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue
+        if ($mailbox.RecipientTypeDetails -eq 'RoomMailbox' -or $mailbox.RecipientTypeDetails -eq 'SharedMailbox' -or $mailbox.RecipientTypeDetails -eq 'EquipmentMailbox'){continue}
+    }
+
+    $UserRole = $null
+    foreach ($admin in $admins){
+        if ($admin.EmailAddress -like $user.UserPrincipalName){$UserRole = $admin.rolename}
+    }
+
+    # Change the License Name 
+    $UserLicense = $null
+    $Licenses = $user.Licenses |select  -ExpandProperty AccountSkuId
+    foreach ($License in $Licenses){
+        $License = ($License).split(":") |select -Last 1
+        $License = $License -replace "O365_BUSINESS_ESSENTIALS",               "Microsoft 365 Business Basic"    
+        $License = $License -replace "O365_BUSINESS_PREMIUM",                  "Microsoft 365 Business Standard"
+        $License = $License -replace "TEAMS_COMMERCIAL_TRIAL",                 "Teams Commercial Cloud (User Initiated)"
+        $License = $License -replace "DESKLESSPACK",                           "Office 365 Plan K1"
+        $License = $License -replace "DESKLESSWOFFPACK",                       "Office 365 Plan K2"
+        $License = $License -replace "LITEPACK",                               "Office 365 Plan P1" 
+        $License = $License -replace "EXCHANGESTANDARD",                       "Office 365 plan 1"
+        $License = $License -replace "STANDARDPACK",                           "Enterprise Plan E1"
+        $License = $License -replace "STANDARDWOFFPACK",                       "Office 365 Plan E2"
+        $License = $License -replace "ENTERPRISEPACK",                         "Enterprise Plan E3"
+        $License = $License -replace "ENTERPRISEPACKLRG",                      "Enterprise Plan E3"
+        $License = $License -replace "ENTERPRISEWITHSCAL",                     "Enterprise Plan E4"
+        $License = $License -replace "STANDARDPACK_STUDENT",                   "Office 365 (Plan A1) for Students"
+        $License = $License -replace "STANDARDWOFFPACKPACK_STUDENT",           "Office 365 (Plan A2) for Students"
+        $License = $License -replace "ENTERPRISEPACK_STUDENT",                 "Office 365 (Plan A3) for Students"
+        $License = $License -replace "ENTERPRISEWITHSCAL_STUDENT",             "Office 365 (Plan A4) for Students" 
+        $License = $License -replace "STANDARDPACK_FACULTY",                   "Office 365 (Plan A1) for Faculty"
+        $License = $License -replace "STANDARDWOFFPACKPACK_FACULTY",           "Office 365 (Plan A2) for Faculty"
+        $License = $License -replace "ENTERPRISEPACK_FACULTY",                 "Office 365 (Plan A3) for Faculty"
+        $License = $License -replace "ENTERPRISEWITHSCAL_FACULTY",             "Office 365 (Plan A4) for Faculty"
+        $License = $License -replace "ENTERPRISEPACK_B_PILOT",                 "Office 365 (Enterprise Preview)"
+        $License = $License -replace "STANDARD_B_PILOT",                       "Office 365 (Small Business Preview)"
+        $License = $License -replace "VISIOCLIENT",                            "Visio Pro Online"
+        $License = $License -replace "POWER_BI_ADDON",                         "Office 365 Power BI Addon"
+        $License = $License -replace "POWER_BI_INDIVIDUAL_USE",                "Power BI Individual User"
+        $License = $License -replace "POWER_BI_STANDALONE",                    "Power BI Stand Alone" 
+        $License = $License -replace "POWER_BI_STANDARD",                      "Power-BI Standard"
+        $License = $License -replace "PROJECTESSENTIALS",                      "Project Lite"
+        $License = $License -replace "PROJECTCLIENT",                          "Project Professional"
+        $License = $License -replace "PROJECTONLINE_PLAN_1",                   "Project Online"
+        $License = $License -replace "PROJECTONLINE_PLAN_2",                   "Project Online and PRO"
+        $License = $License -replace "ProjectPremium",                         "Project Online Premium"
+        $License = $License -replace "ECAL_SERVICES",                          "ECAL"
+        $License = $License -replace "EMS",                                    "Enterprise Mobility Suite"
+        $License = $License -replace "RIGHTSMANAGEMENT_ADHOC",                 "Windows Azure Rights Management"
+        $License = $License -replace "MCOMEETADV",                             "PSTN conferencing" 
+        $License = $License -replace "SHAREPOINTSTORAGE",                      "SharePoint storage"
+        $License = $License -replace "PLANNERSTANDALONE",                      "Planner Standalone"
+        $License = $License -replace "CRMIUR",                                 "CMRIUR"
+        $License = $License -replace "BI_AZURE_P1",                            "Power BI Reporting and Analytics"
+        $License = $License -replace "INTUNE_A",                               "Windows Intune Plan A"
+        $License = $License -replace "PROJECTWORKMANAGEMENT",                  "Office 365 Planner Preview"
+        $License = $License -replace "ATP_ENTERPRISE",                         "Exchange Online Advanced Threat Protection"
+        $License = $License -replace "EQUIVIO_ANALYTICS",                      "Office 365 Advanced eDiscovery"
+        $License = $License -replace "AAD_BASIC",                              "Azure Active Directory Basic"
+        $License = $License -replace "RMS_S_ENTERPRISE",                       "Azure Active Directory Rights Management" 
+        $License = $License -replace "AAD_PREMIUM",                            "Azure Active Directory Premium"
+        $License = $License -replace "MFA_PREMIUM",                            "Azure Multi-Factor Authentication"
+        $License = $License -replace "STANDARDPACK_GOV",                       "Microsoft Office 365 (Plan G1) for Government"
+        $License = $License -replace "STANDARDWOFFPACK_GOV",                   "Microsoft Office 365 (Plan G2) for Government"
+        $License = $License -replace "ENTERPRISEPACK_GOV",                     "Microsoft Office 365 (Plan G3) for Government"
+        $License = $License -replace "ENTERPRISEWITHSCAL_GOV",                 "Microsoft Office 365 (Plan G4) for Government"
+        $License = $License -replace "DESKLESSPACK_GOV",                       "Microsoft Office 365 (Plan K1) for Government"
+        $License = $License -replace "ESKLESSWOFFPACK_GOV",                    "Microsoft Office 365 (Plan K2) for Government"
+        $License = $License -replace "EXCHANGESTANDARD_GOV",                   "Microsoft Office 365 Exchange Online (Plan 1) only for Government"
+        $License = $License -replace "EXCHANGEENTERPRISE_GOV",                 "Microsoft Office 365 Exchange Online (Plan 2) only for Government" 
+        $License = $License -replace "SHAREPOINTDESKLESS_GOV",                 "SharePoint Online Kiosk"
+        $License = $License -replace "EXCHANGE_S_DESKLESS_GOV",                "Exchange Kiosk"
+        $License = $License -replace "RMS_S_ENTERPRISE_GOV",                   "Windows Azure Active Directory Rights Management"
+        $License = $License -replace "OFFICESUBSCRIPTION_GOV",                 "Office ProPlus"
+        $License = $License -replace "MCOSTANDARD_GOV",                        "Lync Plan 2G"
+        $License = $License -replace "SHAREPOINTWAC_GOV",                      "Office Online for Government"
+        $License = $License -replace "SHAREPOINTENTERPRISE_GOV",               "SharePoint Plan 2G"
+        $License = $License -replace "EXCHANGE_S_ENTERPRISE_GOV",              "Exchange Plan 2G"
+        $License = $License -replace "EXCHANGE_S_ARCHIVE_ADDON_GOV",           "Exchange Online Archiving"
+        $License = $License -replace "EXCHANGE_S_DESKLESS",                    "Exchange Online Kiosk" 
+        $License = $License -replace "SHAREPOINTDESKLESS",                     "SharePoint Online Kiosk"
+        $License = $License -replace "SHAREPOINTWAC",                          "Office Online"
+        $License = $License -replace "YAMMER_ENTERPRISE",                      "Yammer for the Starship Enterprise"
+        $License = $License -replace "EXCHANGE_L_STANDARD",                    "Exchange Online Plan 1"
+        $License = $License -replace "MCOLITE",                                "Lync Online (Plan 1)"
+        $License = $License -replace "SHAREPOINTLITE",                         "SharePoint Online (Plan 1)"
+        $License = $License -replace "OFFICE_PRO_PLUS_SUBSCRIPTION_SMBIZ",     "Office ProPlus"
+        $License = $License -replace "EXCHANGE_S_STANDARD_MIDMARKET",          "Exchange Online Plan 1"
+        $License = $License -replace "MCOSTANDARD_MIDMARKET",                  "Lync Online (Plan 1)"
+        $License = $License -replace "SHAREPOINTENTERPRISE_MIDMARKET",         "SharePoint Online (Plan 1)" 
+        $License = $License -replace "OFFICESUBSCRIPTION",                     "Office ProPlus"
+        $License = $License -replace "YAMMER_MIDSIZE",                         "Yammer"
+        $License = $License -replace "DYN365_ENTERPRISE_PLAN1",                "Dynamics 365 Customer Engagement Plan Enterprise Edition"
+        $License = $License -replace "ENTERPRISEPREMIUM_NOPSTNCONF",           "Enterprise E5 (without Audio Conferencing)"
+        $License = $License -replace "ENTERPRISEPREMIUM",                      "Enterprise E5 (with Audio Conferencing)"
+        $License = $License -replace "MCOSTANDARD",                            "Skype for Business Online Standalone Plan 2"
+        $License = $License -replace "PROJECT_MADEIRA_PREVIEW_IW_SKU",         "Dynamics 365 for Financials for IWs"
+        $License = $License -replace "STANDARDWOFFPACK_IW_STUDENT",            "Office 365 Education for Students"
+        $License = $License -replace "STANDARDWOFFPACK_IW_FACULTY",            "Office 365 Education for Faculty"
+        $License = $License -replace "EOP_ENTERPRISE_FACULTY",                 "Exchange Online Protection for Faculty" 
+        $License = $License -replace "EXCHANGESTANDARD_STUDENT",               "Exchange Online (Plan 1) for Students"
+        $License = $License -replace "OFFICESUBSCRIPTION_STUDENT",             "Office ProPlus Student Benefit"
+        $License = $License -replace "STANDARDWOFFPACK_FACULTY",               "Office 365 Education E1 for Faculty"
+        $License = $License -replace "STANDARDWOFFPACK_STUDENT",               "Microsoft Office 365 (Plan A2) for Students"
+        $License = $License -replace "DYN365_FINANCIALS_BUSINESS_SKU",         "Dynamics 365 for Financials Business Edition"
+        $License = $License -replace "DYN365_FINANCIALS_TEAM_MEMBERS_SKU",     "Dynamics 365 for Team Members Business Edition"
+        $License = $License -replace "FLOW_FREE",                              "Microsoft Flow Free"
+        $License = $License -replace "POWER_BI_PRO",                           "Power BI Pro"
+        $License = $License -replace "O365_BUSINESS",                          "Microsoft 365 Apps for business"
+        $License = $License -replace "DYN365_ENTERPRISE_SALES",                "Dynamics Office 365 Enterprise Sales" 
+        $License = $License -replace "RIGHTSMANAGEMENT",                       "Rights Management"
+        $License = $License -replace "PROJECTPROFESSIONAL",                    "Project Professional"
+        $License = $License -replace "VISIOONLINE_PLAN1",                      "Visio Online Plan 1"
+        $License = $License -replace "EXCHANGEENTERPRISE",                     "Exchange Online Plan 2"
+        $License = $License -replace "DYN365_ENTERPRISE_P1_IW",                "Dynamics 365 P1 Trial for Information Workers"
+        $License = $License -replace "DYN365_ENTERPRISE_TEAM_MEMBERS",         "Dynamics 365 For Team Members Enterprise Edition"
+        $License = $License -replace "CRMSTANDARD",                            "Microsoft Dynamics CRM Online Professional"
+        $License = $License -replace "EXCHANGEARCHIVE_ADDON",                  "Exchange Online Archiving For Exchange Online"
+        $License = $License -replace "EXCHANGEDESKLESS",                       "Exchange Online Kiosk"
+        $License = $License -replace "SPZA_IW",                                "App Connect" 
+        $License = $License -replace "WINDOWS_STORE",                          "Windows Store for Business"
+        $License = $License -replace "MCOEV",                                  "Microsoft Phone System"
+        $License = $License -replace "VIDEO_INTEROP",                          "Polycom Skype Meeting Video Interop for Skype for Business"
+        $License = $License -replace "SPE_E5",                                 "Microsoft 365 E5"
+        $License = $License -replace "SPE_E3",                                 "Microsoft 365 E3"
+        $License = $License -replace "ATA",                                    "Advanced Threat Analytics"
+        $License = $License -replace "MCOPSTN2",                               "Domestic and International Calling Plan"
+        $License = $License -replace "FLOW_P1",                                "Microsoft Flow Plan 1"
+        $License = $License -replace "FLOW_P2",                                "Microsoft Flow Plan 2"
+        
+        $UserLicense += $License + ", " 
+    }
+
+    $props = [ordered]@{'Display Name' = $user.DisplayName;
+               'User Name' = $user.UserPrincipalName;
+               'Role' = $UserRole;
+               'Block' = $user.BlockCredential;
+               'Last Password Change' = $user.LastPasswordChangeTimestamp;
+               'Password Never Expires' = $user.PasswordNeverExpires;
+               'MFA Status' = $user.StrongAuthenticationRequirements.State;
+               'License' = $UserLicense 
+    }
+    
+    if (Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue){
+
+        $mailbox = Get-Mailbox -Identity $user.UserPrincipalName
+        $mailboxStat = $user.UserPrincipalName | Get-MailboxStatistics 
+        if ($mailboxStat -eq $null) {
+            $mailboxstat = @{'LastLogonTime' = 'Never';
+                            'TotalItemSize' = "0 (0)";
+                            }
+        }
+
+        $smtp = $mailbox |select name -ExpandProperty EmailAddresses
+    
+        $smtpaddress= $null
+        $smtpaddresses = $null
+        foreach ($smtpaddress in $smtp){
+        
+            if ($smtpaddress -like '*local*' -or $smtpaddress -like "smtp:$($mailbox.PrimarySmtpAddress)" -or $smtpaddress -like '*x400*'`
+            -or $smtpaddress -like '*SIP*' -or $smtpaddress -like '*SPO*' -or $smtpaddress -like '*onmicrosoft.com*')  {continue}
+
+            else{
+                $smtpaddresses += $smtpaddress
+            }
+        }
+        $smtpaddresses = $smtpaddresses -replace 'smtp:',' '
+        $smtpaddresses = $smtpaddresses -join ', '
+
+        $TotalItemSize = ((($mailboxStat.TotalItemSize).tostring()).Split('(')[1]).Replace(' bytes','').Replace(')','').replace(',','')
+        $TotalItemSizeInt = [convert]::ToInt64($TotalItemSize)
+        $TotalItemSizeInt = [math]::round($TotalItemSizeInt  / 1GB, 2)
+
+        $props.Add("Last Logon Time",$mailboxStat.LastUserActionTime)
+        $props.Add("Mailbox Size (GB)",$TotalItemSizeInt)
+        $props.Add("Mailbox Max Size (GB)",($mailbox.ProhibitSendQuota).Split('(')[0])
+        $props.Add("smtp addresess",$smtpaddresses)
+    }
+    
+
+
+    $obj = New-Object -TypeName psobject -Property $props 
+    
+    $result += $obj
+
+}
+
+$result| Export-Csv 365Report.csv -Encoding UTF8 -NoTypeInformation
+write "The Report Name is 365Report.csv"
