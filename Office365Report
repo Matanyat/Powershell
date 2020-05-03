@@ -19,10 +19,13 @@ Report only for Users with mailbox (no shared or Resources)
 .PARAMETER Shared
 Report Only Shared,Resources and Equipment Mailboxes
 
+.PARAMETER MFA
+connect with Multi Factor Authentication (Exchange Online Remote PowerShell Module needs to be installed)
+
 .NOTES
-  Version:        1.0
+  Version:        1.1
   Author:         Matanya Tzedek
-  Creation Date:  27.4.20
+  Creation Date:  2.5.20
   
 .EXAMPLE
 PS C:\> Office365Report -LicensedOnly
@@ -32,23 +35,60 @@ Run the command and get report for all Licensed users
 
 #>
 
-if (-not(Get-Module -ListAvailable -Name msonline)) {Write-Warning "Please Install MsOnline Module"; sleep 5 ;exit}
-
 
 param(
     [switch]$LicensedOnly,
     [switch]$MailboxOnly,
-    [switch]$Shared
+    [switch]$Shared,
+    [switch]$MFA
     )
 
-$result = @()
+if (-not(Get-Module msonline)) {
+    if (Get-Module -ListAvailable -Name msonline){
+        Import-Module msonline
+    }
+    else{
+        if ($PSVersionTable.PSVersion.Major -ge 5){
+                if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]"Administrator")){
+                    write "MsOnline Module is not installed. Please install the module, or run the Script again as Administrator"
+                    exit
+                }
+                else{
+                    write "Installing MsOnline Module"
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    Install-Module msonline 
+                }
+        }
+        else{
+            Write-Warning "Please Install MsOnline Module"; sleep 5 ;exit
+        }
+    }
+}
+
 
 #Connect To Office 365
-$UserCredential = Get-Credential 
-$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $UserCredential -Authentication Basic -AllowRedirection
-Import-PSSession $Session 
-Connect-MsolService -Credential $UserCredential
+
+
+if ($MFA){
+    $MFAExchangeModule = ((Get-ChildItem -Path $($env:LOCALAPPDATA+"\Apps\2.0\") -Filter CreateExoPSSession.ps1 -Recurse ).FullName | Select-Object -Last 1)
+    if ($MFAExchangeModule){
+        . "$MFAExchangeModule"
+        Connect-ExchangeOnline
+        Connect-MsolService 
+
+    }
+    else {Write-Warning "Exchange Online Remote PowerShell Module for multi-factor authentication not installed"; sleep 5; exit}
+}
+
+else{
+    $UserCredential = Get-Credential 
+    $Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $UserCredential -Authentication Basic -AllowRedirection
+    Import-PSSession $Session 
+    Connect-MsolService -Credential $UserCredential
+}
+
 cls
+
 
 
 #Delete the old Report
@@ -86,6 +126,8 @@ foreach ($role in $roles) {
 
 cls
 
+$result = @()
+
 $users = Get-MsolUser 
 
 $Counter = 0
@@ -94,6 +136,11 @@ ForEach ($user in $users){
     
     Write-Progress -Activity "Processing Users" -CurrentOperation $($user.displayname) -PercentComplete (($counter / $users.count) * 100) -Status Processing
     $Counter++
+
+    $TotalItemSizeInt = $null
+    $mailboxStat =$null
+    $ProhibitSendQuota = $null
+    $smtpaddresses =$null
 
     #if ($user.UserType -like "Guest" -or -not $user.IsLicensed ) {continue}
 
@@ -126,6 +173,7 @@ ForEach ($user in $users){
         $License = ($License).split(":") |select -Last 1
         $License = $License -replace "O365_BUSINESS_ESSENTIALS",               "Microsoft 365 Business Basic"    
         $License = $License -replace "O365_BUSINESS_PREMIUM",                  "Microsoft 365 Business Standard"
+        $License = $License -replace "SPB",                                    "Microsoft 365 Business Premium"
         $License = $License -replace "TEAMS_COMMERCIAL_TRIAL",                 "Teams Commercial Cloud (User Initiated)"
         $License = $License -replace "DESKLESSPACK",                           "Office 365 Plan K1"
         $License = $License -replace "DESKLESSWOFFPACK",                       "Office 365 Plan K2"
@@ -243,15 +291,6 @@ ForEach ($user in $users){
         $UserLicense += $License + ", " 
     }
 
-    $props = [ordered]@{'Display Name' = $user.DisplayName;
-               'User Name' = $user.UserPrincipalName;
-               'Role' = $UserRole;
-               'Block' = $user.BlockCredential;
-               'Last Password Change' = $user.LastPasswordChangeTimestamp;
-               'Password Never Expires' = $user.PasswordNeverExpires;
-               'MFA Status' = $user.StrongAuthenticationRequirements.State;
-               'License' = $UserLicense 
-    }
     
     if (Get-Mailbox $user.UserPrincipalName -ErrorAction silentlycontinue){
 
@@ -283,14 +322,23 @@ ForEach ($user in $users){
         $TotalItemSizeInt = [convert]::ToInt64($TotalItemSize)
         $TotalItemSizeInt = [math]::round($TotalItemSizeInt  / 1GB, 2)
 
-        $props.Add("Last Logon Time",$mailboxStat.LastUserActionTime)
-        $props.Add("Mailbox Size (GB)",$TotalItemSizeInt)
-        $props.Add("Mailbox Max Size (GB)",($mailbox.ProhibitSendQuota).Split('(')[0])
-        $props.Add("smtp addresess",$smtpaddresses)
+        $ProhibitSendQuota = ($mailbox.ProhibitSendQuota).Split('(')[0]
+    }
+
+    $props = [ordered]@{'Display Name' = $user.DisplayName;
+               'User Name' = $user.UserPrincipalName;
+               'Role' = $UserRole;
+               'Block' = $user.BlockCredential;
+               'Last Password Change' = $user.LastPasswordChangeTimestamp;
+               'Password Never Expires' = $user.PasswordNeverExpires;
+               'MFA Status' = $user.StrongAuthenticationRequirements.State;
+               'License' = $UserLicense ;
+               'Last Logon Time' = $mailboxStat.LastUserActionTime;
+               'Mailbox Size (GB)' = $TotalItemSizeInt;
+               'Mailbox Max Size (GB)' = $ProhibitSendQuota;
+               'smtp addresess' = $smtpaddresses
     }
     
-
-
     $obj = New-Object -TypeName psobject -Property $props 
     
     $result += $obj
@@ -299,3 +347,4 @@ ForEach ($user in $users){
 
 $result| Export-Csv 365Report.csv -Encoding UTF8 -NoTypeInformation
 write "The Report Name is 365Report.csv"
+Get-PSSession | Remove-PSSession
