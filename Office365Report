@@ -128,7 +128,7 @@ cls
 
 $result = @()
 
-$users = Get-MsolUser 
+$users = Get-MsolUser -All
 
 $Counter = 0
 
