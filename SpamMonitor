@@ -1,0 +1,148 @@
+<#
+.SYNOPSIS
+Spam Monitor
+
+.DESCRIPTION
+This Script Monitor Deferred massages in Spam Titan 
+The script sends alerts by mail if too much mail massages stay in deferred 
+
+The script uses RestAPI https://api-spamtitan.titanhq.com
+
+for the script run in your environment, you need to configure:
+smtp settings
+Token
+url for $AuthDomains 
+url for $Deferred 
+
+
+.NOTES
+  Version:        1
+  Author:         Matanya Tzedek
+  Creation Date:  2.5.20
+  
+
+#>
+
+
+# Item You Can Change
+[array]$ExpDomain = 'domainA','domainB.com' # List of Domain Excluded
+[int]$ResendTime = '30' # Time to wait before resend mail about know issue
+[int]$MailCount = '5' # The treshold nember of Deferred mail to send alert
+$SendTo = ''
+
+$DeferredDomains = @()
+$Domains = @{}
+$login = ""
+$password = "" | Convertto-SecureString -AsPlainText -Force
+$MailCred = New-Object System.Management.Automation.Pscredential -Argumentlist $login,$password
+
+#mail Function
+Function Send-mail {
+    
+    param(
+
+    $From = 'MonitorSpam@Domain.com',
+    $Subject = 'SpamTitan Alert',
+    $Body = 'some body',
+    $SMTPServer = 'smtp.server.com',
+    $Port = 25,
+    $Credential = $MailCred
+    
+    )
+    
+
+Send-MailMessage -From $From -To $SendTo -Subject $Subject -Body $Body -BodyAsHtml -SmtpServer $SMTPServer -Port $Port -Credential $Credential
+}
+
+
+# Create Status File, to Prevent resending for a known issue
+if (!(Test-Path .\StatusFile.csv)){New-Item -ItemType File -Name StatusFile.csv}
+$status = Import-Csv .\StatusFile.csv
+Remove-Item .\StatusFile.csv
+
+$token = ''
+
+#Get List of Authorized domain From SpamTitan
+$AuthDomains = Invoke-WebRequest -Uri "https://spamtitanSERVER/restapi/domains/auth" -Headers @{"Authorization" = "Bearer $Token"} 
+$AuthDomains = $AuthDomains.content
+$StartData = $AuthDomains.IndexOf("[{") ; $EndData = $AuthDomains.IndexOf("}]")
+$AuthDomains = $AuthDomains.Substring($StartData, $EndData-$startdata+2) |ConvertFrom-Json
+$AuthDomains = $AuthDomains.domain
+
+#Get List of Deferred Mails From SpamTitan
+$Deferred = Invoke-WebRequest -Uri "https://spamtitanSERVER/restapi/mail-queue/deferred" -Headers @{"Authorization" = "Bearer $Token"} 
+$Deferred = $Deferred.Content
+$StartData = $Deferred.IndexOf("[{") ; $EndData = $Deferred.IndexOf("]}")
+$Deferred = $Deferred.Substring($StartData, $EndData-$startdata+1) |ConvertFrom-Json
+
+# Convert List of mails to List of Domains and Filter Unauthorized Domain
+ foreach ($msg in $Deferred){
+    $domain = $msg.recipients -split '@' |select -last 1
+    #if ($domain -in $ExpDomain) {continue} #temp for testing
+    if ($domain -notin $AuthDomains -or $domain -in $ExpDomain) {continue}
+    else{
+        $DeferredDomains = $DeferredDomains + $domain
+
+    }
+}
+
+# Convert $DeferredDomains String to $Domains HashTable 
+foreach ($DeferredDomain in $DeferredDomains){$Domains[$DeferredDomain] +=1}
+foreach ($Line in $domains.GetEnumerator()){
+    if ($Line.value -ge $MailCount){
+        if ($status -ne $null){
+            if (!($status.domain).contains($line.Name)){ # check if it's new domain
+                    $props = @{
+                            'Domain'=$Line.name;
+                            'Count'=$Line.value;
+                            'Time'= Get-Date  -Format "dd/MM/yyyy HH:mm:ss"
+                    }
+                    $NewStatus = New-Object -TypeName psobject -Property $props
+                    $NewStatus |export-csv .\StatusFile.csv -Append -NoTypeInformation
+                    $WarningMSG ="Problem with Domain <h1>$($Line.name)</h1> $($line.Value) massages is Deferred" 
+                    Write-Warning $WarningMSG 
+                    Send-mail -Body $WarningMSG
+             }
+             else{
+                foreach ($StatusItem in $status){ 
+                $StatusItemTime  = [datetime]::parseexact($StatusItem.time , "dd/MM/yyyy HH:mm:ss", $null)
+                
+                if ($Line.Name -like $StatusItem.domain -and (Get-Date) -ge ($StatusItemTime).AddMinutes(+$ResendTime)){
+                    $props = @{
+                            'Domain'=$Line.name;
+                            'Count'=$Line.value;
+                            'Time'= Get-Date  -Format "dd/MM/yyyy HH:mm:ss"
+                    }
+                    $NewStatus = New-Object -TypeName psobject -Property $props
+                    $NewStatus |export-csv .\StatusFile.csv -Append -NoTypeInformation
+                    $WarningMSG ="Problem with Domain <h1>$($Line.name)</h1> $($line.Value) massages is Deferred" 
+                    Write-Warning $WarningMSG 
+                    Send-mail -Body $WarningMSG
+                }
+
+                if ($Line.Name -like $StatusItem.domain -and (Get-Date) -lt ($StatusItemTime).AddMinutes(+$ResendTime)){
+                    $props = @{
+                            'Domain'=$Line.name;
+                            'Count'=$Line.value;
+                            'Time'= $StatusItem.Time
+                    }
+                    $NewStatus = New-Object -TypeName psobject -Property $props
+                    $NewStatus |export-csv .\StatusFile.csv -Append -NoTypeInformation
+                }
+                }
+             }
+        }#if ($status -ne $null)
+        else{
+            $props = @{
+                    'Domain'=$Line.name;
+                    'Count'=$Line.value;
+                    'Time'= Get-Date  -Format "dd/MM/yyyy HH:mm:ss"
+            }
+            $NewStatus = New-Object -TypeName psobject -Property $props
+            $NewStatus |export-csv .\StatusFile.csv -Append -NoTypeInformation
+            $WarningMSG ="Problem with Domain <h1>$($Line.name)</h1> $($line.Value) massages is Deferred" 
+            Write-Warning $WarningMSG 
+            Send-mail -Body $WarningMSG
+        }
+    }#if ($Line.value -ge $MailCount)
+}
